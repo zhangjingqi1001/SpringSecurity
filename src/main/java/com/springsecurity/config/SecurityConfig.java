@@ -1,15 +1,23 @@
 package com.springsecurity.config;
 
+import com.springsecurity.filter.JwtAuthenticationTokenFilter;
+import com.springsecurity.handler.AuthenticationEntryPointImpl;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.config.annotation.method.configuration.EnableGlobalMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.AuthenticationEntryPoint;
+import org.springframework.security.web.access.AccessDeniedHandler;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 @Configuration
+@EnableGlobalMethodSecurity(prePostEnabled = true)
 public class SecurityConfig extends WebSecurityConfigurerAdapter {
 
     /**
@@ -20,6 +28,16 @@ public class SecurityConfig extends WebSecurityConfigurerAdapter {
     public PasswordEncoder passwordEncoder(){
         return  new BCryptPasswordEncoder();
     }
+
+
+    @Autowired
+    private JwtAuthenticationTokenFilter jwtAuthenticationTokenFilter;
+
+    @Autowired
+    private AuthenticationEntryPoint AuthenticationEntryPoint;
+
+    @Autowired
+    private AccessDeniedHandler AccessDeniedHandler;
 
     @Override
     protected void configure(HttpSecurity http) throws Exception {
@@ -34,6 +52,16 @@ public class SecurityConfig extends WebSecurityConfigurerAdapter {
                 .antMatchers("/user/login").anonymous()
                 // 除上面外的所有请求全部需要鉴权认证
                 .anyRequest().authenticated();
+//      TODO 添加过滤器
+        http.addFilterBefore(jwtAuthenticationTokenFilter, UsernamePasswordAuthenticationFilter.class);
+
+//      TODO 配置异常处理器
+//      添加AuthenticationEntryPoint和AccessDeniedHandler然后配置给SpringSecurity
+        http.exceptionHandling()
+//              认证失败处理器
+                .authenticationEntryPoint( AuthenticationEntryPoint)
+//              授权失败处理器
+                .accessDeniedHandler(AccessDeniedHandler);
     }
 
     /**

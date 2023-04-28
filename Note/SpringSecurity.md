@@ -1390,9 +1390,137 @@ public class JwtUtil {
 
 
 
-##  3.3 授权
+
+
+
+
+#### 3.1.7.5  Jwt 认证过滤器代码实现
+
+   根据之前的分析，在这里我们要实现
+
+① 获取token
+
+② 解析token获取其中的userid
+
+③ 从Redis中获取用户信息
+
+④ 存入SecurityContextHolder
+
+
+
+```java
+/**
+ * 之前我们选择的是实现Filter接口，但是这个过滤器接口存在一点问题，有可能发一次请求经过好几次过滤器
+ * OncePerRequestFilter  是过滤器的实现类，一次请求只经过一个过滤器
+ */
+@Component
+public class JwtAuthenticationTokenFilter extends OncePerRequestFilter {
+    @Autowired
+    private RedisCache redisCache;
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain) throws ServletException, IOException {
+//      TODO 获取token (前端发送请求携带过来)
+        String token = request.getHeader("token");   //有可能是空的，不一定所有的请求都携带token
+        if (!Strings.hasText(token)) {
+//          说明token没有，直接放行
+//          为什么放行？  因为后面的操作是对token的解析，而这个请求没有携带token
+//                      除此之外，后面还有其他的过滤器，也可以在进行判断（比如说在FilterSecurityInterceptor中）
+            filterChain.doFilter(request, response);
+//          为什么加return？  放行后会执行到后面的几个过滤器，都执行完然后响应的时候还会执行一遍过滤器链
+            return;
+        }
+
+//      TODO 解析token
+        Claims claims = null;
+        String userId =null;
+        try {
+            claims = JwtUtil.parseJWT(token);
+//          这样获取的就是生成token的原来数据，因为当时我们使用userid生成的token
+             userId = claims.getSubject();
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new RuntimeException("token非法");
+        }
+
+//      TODO 从Redis中获取用户信息
+        String redisKey = "login:"+userId;
+        LoginUser loginUser = redisCache.getCacheObject(redisKey);
+        if (loginUser ==null ){
+            throw new RuntimeException("token非法");
+        }
+
+
+//      TODO 将用户信息存入到SecurityContextHolder中
+//      三个参数：在构造方法中会有一个super.setAuthenticated(true)，表示已认证的情况
+//      第一个参数：用户信息，第二个参数：null,第三个参数：Collection集合，有关权限的信息，但是现在还没有权限信息，先写null
+        UsernamePasswordAuthenticationToken usernamePasswordAuthenticationToken = new UsernamePasswordAuthenticationToken(loginUser,null,null);
+        SecurityContextHolder.getContext().setAuthentication(usernamePasswordAuthenticationToken);
+
+//      TODO: 放行
+        filterChain.doFilter(request, response);
+    }
+}
+```
+
+
+
+**虽然我们把这个过滤器链写好了，但是此过滤器并不会在SpringSecurity当中，并且要指定过滤器在过滤器链中的位置，我们需要自己进行配置**
+
+```java
+    @Autowired
+    private JwtAuthenticationTokenFilter jwtAuthenticationTokenFilter;
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http
+                //关闭csrf
+                .csrf().disable()
+                //不通过Session获取SecurityContext
+                .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                .and()
+                .authorizeRequests()
+                // 对于登录接口 允许匿名访问
+                .antMatchers("/user/login").anonymous()
+                // 除上面外的所有请求全部需要鉴权认证
+                .anyRequest().authenticated();
+//      添加过滤器
+        http.addFilterBefore(jwtAuthenticationTokenFilter, UsernamePasswordAuthenticationFilter.class);
+    }
+```
+
+
+
+
+
+#### 3.1.7.6 退出登录
+
+   用户之前生成的token不能使用了。
+
+```java
+    @Override
+    public ResponseResult logout() {
+//      TODO 获取SecurityContextHolder中的用户id
+        UsernamePasswordAuthenticationToken authentication = (UsernamePasswordAuthenticationToken) SecurityContextHolder.getContext().getAuthentication();
+        LoginUser loginUser = (LoginUser) authentication.getPrincipal();
+        Long id = loginUser.getUser().getId();
+
+//      TODO 删除Redis中的值
+        redisCache.deleteObject("login:"+id);
+
+        return new ResponseResult<>(200,"注销成功");
+    }
+```
+
+
+
+
+
+##  3.2 授权
 
    微信来举例子，微信登录成功后用户即可使用微信的功能，比如，发红包、!发朋友圈、添加好友等，没有绑定银行卡的用户是无法发送红包的，绑定银行卡的用户才可以发红包，发红包功能、发朋友圈功能都是微信的资源即功能资源，用户拥有发红包功能的权限才可以正常使用发送红包功能，拥有发朋友圈功能的权限才可以使用发朋友圈功能，这个根据用户的权限来控制用户使用资源的过程就是授权。
+
+
 
 **为什么要授权 ?**
    认证是为了保证用户身份的合法性，授权则是为了更细粒度的对隐私数据进行划分，授权是在认证通过后发生的，控制不同的用户能够访问不同的资源。
@@ -1401,7 +1529,706 @@ public class JwtUtil {
 
 
 
+### 3.2.1 权限系统的作用
+
+   	例如一个学校图书馆的管理系统，如果是普通学生登录就能看到借书还书相关的功能，不可能让他看到并且去使用添加书籍信息，删除书籍信息等功能。但是如果是一个图书馆管理员的账号登录了，应该就能看到并使用添加书籍信息，删除书籍信息等功能。
+
+​	总结起来就是**不同的用户可以使用不同的功能**。这就是权限系统要去实现的效果。
+
+​	我们不能只依赖前端去判断用户的权限来选择显示哪些菜单哪些按钮。因为如果只是这样，如果有人知道了对应功能的接口地址就可以不通过前端，直接去发送请求来实现相关功能操作。
+
+​	所以我们还**需要在后台进行用户权限的判断，判断当前用户是否有相应的权限，必须具有所需权限才能进行相应的操作**。
+
+​	
 
 
 
+### 3.2.2 授权基本流程
+
+   在SpringSecurity中，会使用默认的FilterSecurityInterceptor来进行权限校验。在FilterSecurityInterceptor中会从SecurityContextHolder获取其中的Authentication，然后获取其中的权限信息。当前用户是否拥有访问当前资源所需的权限。 
+
+ 我们之前的图：![image-20230426235249540](https://picture-typora-zhangjingqi.oss-cn-beijing.aliyuncs.com/image-20230426235249540.png)
+
+
+
+
+
+### 3.2.3 授权实现
+
+#### 3.2.3.1 限制访问资源所需权限
+
+我们选择基于注解对权限控制的方式：开启相关配置
+
+```java
+@Configuration
+@EnableGlobalMethodSecurity(prePostEnabled = true)  //开启注解的功能
+public class SecurityConfig extends WebSecurityConfigurerAdapter {
+    ..................
+}
+```
+
+此时可以使用对应的注解
+
+```java
+@RestController
+@RequestMapping("/hello")
+public class HelloController {
+
+    @GetMapping("/hello")
+//    会执行hasAuthority('test')方法，返回值类型是布尔类型，如果是true就可以访问这个请求
+    @PreAuthorize("hasAuthority('test')")  //访问资源之前进行一个资源的认证，是否能够访问这个资源
+    private String hello(){
+        return "hello";
+    }
+}
+```
+
+ 
+
+
+
+#### 3.2.3.2 封装权限信息
+
+##### 3.2.3.2.1 补充 UserDetailsServiceImpl implements UserDetailsService类授权
+
+```java
+/**
+ *   与数据库进行操作
+ */
+@Service
+public class UserDetailsServiceImpl implements UserDetailsService {
+
+    @Autowired
+    private UserMapper userMapper;
+
+
+//   可以观看之前粉色的那张图片，这个方法是由DaoAuthenticationProvider调用
+//   我们要在这方法中做的就是 想数据库中查询，获取用户信息、查询权限信息
+    @Override
+    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+//      TODO 查询用户信息
+        LambdaQueryWrapper<User> queryWrapper = new LambdaQueryWrapper<>();
+        queryWrapper.eq(User::getUserName,username);
+
+        User user = userMapper.selectOne(queryWrapper);
+//      如果没有查询到用户，就抛出异常
+        if(Objects.isNull(user)){
+            throw new RuntimeException("用户不存在");
+        }
+
+//      TODO 查询对应的权限信息（讲到授权后在补全这个地方）
+//        这个地方我们先把权限信息写死
+        List<String> list = new ArrayList<>(Arrays.asList("test","admin"));
+
+
+//      TODO 封装成UserDetails将其返回
+//      LoginUser是我们自己封装的一个UserDetails接口的实现类
+        return new LoginUser(user,list);  //传入用户信息及权限集合，我们现在对LoginUser进行了修改
+    }
+}
+
+```
+
+
+
+
+
+
+
+##### 3.2.3.2.2 补充  LoginUser implements UserDetails 类 授权
+
+```java
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class LoginUser implements UserDetails {
+    private User user;
+
+//  存储权限信息
+    private List<String>  permissions;
+
+//  为什么什么这个成员变量？
+//     如果每次请求都把权限字符串封装成下面的代码，比较耗时间，我们直接把他设置成成员变量
+    @JSONField(serialize = false)  //这个属性不会序列化到我们的Redis中
+    private  List<SimpleGrantedAuthority> authorities;
+
+    public LoginUser(User user) {
+        this.user = user;
+    }
+
+    public LoginUser(User user, List<String> permissions) {
+        this.user = user;
+        this.permissions = permissions;
+    }
+
+    /**
+     *
+     * @return  获取权限信息
+     */
+    @Override
+    public Collection<? extends GrantedAuthority> getAuthorities() {
+//      为什么什么这个成员变量？
+//        如果每次请求都把权限字符串封装成下面的代码，比较耗时间，我们直接把他设置成成员变量
+
+//        把permissions集合的String类型权限封装成Collection<? extends GrantedAuthority>的实现类SimpleGrantedAuthority
+        if(authorities !=null){
+            return authorities;
+        }
+         authorities = permissions.stream().map(SimpleGrantedAuthority::new).collect(Collectors.toList());
+//      返回权限信息的
+        return authorities;
+    }
+
+    /**
+     *   框架会调用LoginUser的getPassword方法获取当前用户的密码
+     * @return   获取当前用户的密码
+     */
+    @Override
+    public String getPassword() {
+
+        return user.getPassword();
+    }
+
+    /**
+     *
+     * @return
+     */
+    @Override
+    public String getUsername() {
+        return user.getUserName();
+    }
+
+    /**
+     * 判断是否没过期的
+     *
+     * @return false 代表超时
+     */
+    @Override
+    public boolean isAccountNonExpired() {
+        return true;
+    }
+
+    @Override
+    public boolean isAccountNonLocked() {
+        return true;
+    }
+
+    @Override
+    public boolean isCredentialsNonExpired() {
+        return true;
+    }
+
+    /**
+     * 是否可用
+     *
+     * @return
+     */
+    @Override
+    public boolean isEnabled() {
+        return true;
+    }
+}
+```
+
+
+
+
+
+##### 3.2.3.2.3 补充 JwtAuthenticationTokenFilter extends OncePerRequestFilter 类 授权
+
+```java
+**
+ * 之前我们选择的是实现Filter接口，但是这个过滤器接口存在一点问题，有可能发一次请求经过好几次过滤器
+ * OncePerRequestFilter  是过滤器的实现类，一次请求只经过一个过滤器
+ */
+@Component
+public class JwtAuthenticationTokenFilter extends OncePerRequestFilter {
+    @Autowired
+    private RedisCache redisCache;
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain) throws ServletException, IOException {
+//      TODO 获取token (前端发送请求携带过来)
+        String token = request.getHeader("token");   //有可能是空的，不一定所有的请求都携带token
+        if (!Strings.hasText(token)) {
+//          说明token没有，直接放行
+//          为什么放行？  因为后面的操作是对token的解析，而这个请求没有携带token
+//                      除此之外，后面还有其他的过滤器，也可以在进行判断（比如说在FilterSecurityInterceptor中）
+            filterChain.doFilter(request, response);
+//          为什么加return？  放行后会执行到后面的几个过滤器，都执行完然后响应的时候还会执行一遍过滤器链
+            return;
+        }
+
+//      TODO 解析token
+        Claims claims = null;
+        String userId =null;
+        try {
+            claims = JwtUtil.parseJWT(token);
+//          这样获取的就是生成token的原来数据，因为当时我们使用userid生成的token
+             userId = claims.getSubject();
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new RuntimeException("token非法");
+        }
+
+//      TODO 从Redis中获取用户信息
+        String redisKey = "login:"+userId;
+        LoginUser loginUser = redisCache.getCacheObject(redisKey);
+        if (loginUser ==null ){
+            throw new RuntimeException("token非法");
+        }
+
+
+//      TODO 将用户信息存入到SecurityContextHolder中、获取权限信息封装到Authentication中
+//      三个参数：在构造方法中会有一个super.setAuthenticated(true)，表示已认证的情况
+//      第一个参数：用户信息，第二个参数：null,第三个参数：Collection集合，有关权限的信息，但是现在还没有权限信息，先写null
+        UsernamePasswordAuthenticationToken usernamePasswordAuthenticationToken = new UsernamePasswordAuthenticationToken(loginUser,null,loginUser.getAuthorities());
+        SecurityContextHolder.getContext().setAuthentication(usernamePasswordAuthenticationToken);
+
+//      TODO: 放行
+        filterChain.doFilter(request, response);
+    }
+}
+```
+
+
+
+
+
+
+
+#### 3.2.3.3 从数据库查询权限信息
+
+​    刚刚我们用户的权限是从代码中写死的，我们现在要把用户对应的权限放入到数据库，然后查询获取对应权限
+
+
+
+##### 3.2.3.3.1 RBAC权限模型
+
+​    RBAC权限模型，基于角色的权限控制，这是目前最常被开发者使用也是相对易用、通用权限模型。
+
+​      一个角色就是一个角色组，比如管理员角色有什么权限，普通用户有什么权限........，这样的话我们就给用户分配角色就可以了。
+
+
+
+![image-20230428155043807](https://picture-typora-zhangjingqi.oss-cn-beijing.aliyuncs.com/image-20230428155043807.png)
+
+
+
+
+
+##### 3.2.3.3.2  建立权限表与角色表
+
+​     值得注意的是，用户可以有多个角色，可以使图书管理员，也可以是借阅人，角色表也对应了多个用户，即用户表和角色表是多对多的关系。
+
+
+
+   用户表与角色表关联，角色表与权限表关联。
+
+```sql
+DROP TABLE IF EXISTS `sys_menu`;
+
+CREATE TABLE `sys_menu` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `menu_name` varchar(64) NOT NULL DEFAULT 'NULL' COMMENT '菜单名',
+  `path` varchar(200) DEFAULT NULL COMMENT '路由地址',
+  `component` varchar(255) DEFAULT NULL COMMENT '组件路径',
+  `visible` char(1) DEFAULT '0' COMMENT '菜单状态（0显示 1隐藏）',
+  `status` char(1) DEFAULT '0' COMMENT '菜单状态（0正常 1停用）',
+  `perms` varchar(100) DEFAULT NULL COMMENT '权限标识',
+  `icon` varchar(100) DEFAULT '#' COMMENT '菜单图标',
+  `create_by` bigint(20) DEFAULT NULL,
+  `create_time` datetime DEFAULT NULL,
+  `update_by` bigint(20) DEFAULT NULL,
+  `update_time` datetime DEFAULT NULL,
+  `del_flag` int(11) DEFAULT '0' COMMENT '是否删除（0未删除 1已删除）',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COMMENT='菜单表';
+
+/*Table structure for table `sys_role` */
+
+DROP TABLE IF EXISTS `sys_role`;
+
+CREATE TABLE `sys_role` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `name` varchar(128) DEFAULT NULL,
+  `role_key` varchar(100) DEFAULT NULL COMMENT '角色权限字符串',
+  `status` char(1) DEFAULT '0' COMMENT '角色状态（0正常 1停用）',
+  `del_flag` int(1) DEFAULT '0' COMMENT 'del_flag',
+  `create_by` bigint(200) DEFAULT NULL,
+  `create_time` datetime DEFAULT NULL,
+  `update_by` bigint(200) DEFAULT NULL,
+  `update_time` datetime DEFAULT NULL,
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COMMENT='角色表';
+
+/*Table structure for table `sys_role_menu` */
+
+DROP TABLE IF EXISTS `sys_role_menu`;
+
+CREATE TABLE `sys_role_menu` (
+  `role_id` bigint(200) NOT NULL AUTO_INCREMENT COMMENT '角色ID',
+  `menu_id` bigint(200) NOT NULL DEFAULT '0' COMMENT '菜单id',
+  PRIMARY KEY (`role_id`,`menu_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4;
+
+/*Table structure for table `sys_user` */
+
+DROP TABLE IF EXISTS `sys_user`;
+
+CREATE TABLE `sys_user` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `user_name` varchar(64) NOT NULL DEFAULT 'NULL' COMMENT '用户名',
+  `nick_name` varchar(64) NOT NULL DEFAULT 'NULL' COMMENT '昵称',
+  `password` varchar(64) NOT NULL DEFAULT 'NULL' COMMENT '密码',
+  `status` char(1) DEFAULT '0' COMMENT '账号状态（0正常 1停用）',
+  `email` varchar(64) DEFAULT NULL COMMENT '邮箱',
+  `phonenumber` varchar(32) DEFAULT NULL COMMENT '手机号',
+  `sex` char(1) DEFAULT NULL COMMENT '用户性别（0男，1女，2未知）',
+  `avatar` varchar(128) DEFAULT NULL COMMENT '头像',
+  `user_type` char(1) NOT NULL DEFAULT '1' COMMENT '用户类型（0管理员，1普通用户）',
+  `create_by` bigint(20) DEFAULT NULL COMMENT '创建人的用户id',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint(20) DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` int(11) DEFAULT '0' COMMENT '删除标志（0代表未删除，1代表已删除）',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COMMENT='用户表';
+
+/*Table structure for table `sys_user_role` */
+
+DROP TABLE IF EXISTS `sys_user_role`;
+
+CREATE TABLE `sys_user_role` (
+  `user_id` bigint(200) NOT NULL AUTO_INCREMENT COMMENT '用户id',
+  `role_id` bigint(200) NOT NULL DEFAULT '0' COMMENT '角色id',
+  PRIMARY KEY (`user_id`,`role_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+
+
+SELECT 
+	DISTINCT m.`perms`
+FROM
+	sys_user_role ur
+	LEFT JOIN `sys_role` r ON ur.`role_id` = r.`id`
+	LEFT JOIN `sys_role_menu` rm ON ur.`role_id` = rm.`role_id`
+	LEFT JOIN `sys_menu` m ON m.`id` = rm.`menu_id`
+WHERE
+	user_id = 2
+	AND r.`status` = 0
+	AND m.`status` = 0
+
+
+
+
+
+
+
+
+
+##### 3.2.3.3.3 实体类
+
+```java
+/**
+ * 菜单表(Menu)实体类
+ */
+@TableName(value="sys_menu")
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class Menu implements Serializable {
+    private static final long serialVersionUID = -54979041104113736L;
+    
+    @TableId
+    private Long id;
+    /**
+    * 菜单名
+    */
+    private String menuName;
+    /**
+    * 路由地址
+    */
+    private String path;
+    /**
+    * 组件路径
+    */
+    private String component;
+    /**
+    * 菜单状态（0显示 1隐藏）
+    */
+    private String visible;
+    /**
+    * 菜单状态（0正常 1停用）
+    */
+    private String status;
+    /**
+    * 权限标识
+    */
+    private String perms;
+    /**
+    * 菜单图标
+    */
+    private String icon;
+    
+    private Long createBy;
+    
+    private Date createTime;
+    
+    private Long updateBy;
+    
+    private Date updateTime;
+    /**
+    * 是否删除（0未删除 1已删除）
+    */
+    private Integer delFlag;
+    /**
+    * 备注
+    */
+    private String remark;
+}
+```
+
+
+
+```java
+@Mapper
+public interface MenuMapper extends BaseMapper<Menu> {
+    @Select("SELECT \n" +
+            "\tDISTINCT m.`perms`\n" +
+            "FROM\n" +
+            "\tsys_user_role ur\n" +
+            "\tLEFT JOIN `sys_role` r ON ur.`role_id` = r.`id`\n" +
+            "\tLEFT JOIN `sys_role_menu` rm ON ur.`role_id` = rm.`role_id`\n" +
+            "\tLEFT JOIN `sys_menu` m ON m.`id` = rm.`menu_id`\n" +
+            "WHERE\n" +
+            "\tuser_id =  #{userId}\n" +
+            "\tAND r.`status` = 0\n" +
+            "\tAND m.`status` = 0")
+    List<String>  selectPermsByUserId(Long userId);
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+#####   3.2.3.3.4   补充 UserDetailsServiceImpl implements UserDetailsService类授权方法
+
+
+
+```java
+@Service
+public class UserDetailsServiceImpl implements UserDetailsService {
+
+    @Autowired
+    private UserMapper userMapper;
+
+    @Autowired
+    private MenuMapper menuMapper;
+
+//   可以观看之前粉色的那张图片，这个方法是由DaoAuthenticationProvider调用
+//   我们要在这方法中做的就是 想数据库中查询，获取用户信息、查询权限信息
+    @Override
+    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+//      TODO 查询用户信息
+        LambdaQueryWrapper<User> queryWrapper = new LambdaQueryWrapper<>();
+        queryWrapper.eq(User::getUserName,username);
+
+        User user = userMapper.selectOne(queryWrapper);
+//      如果没有查询到用户，就抛出异常
+        if(Objects.isNull(user)){
+            throw new RuntimeException("用户不存在");
+        }
+
+//      TODO 查询对应的权限信息（讲到授权后在补全这个地方）
+        List<String> list = menuMapper.selectPermsByUserId(user.getId());
+//        List<String> list = new ArrayList<>(Arrays.asList("test","admin"));  //写死
+
+
+//      TODO 封装成UserDetails将其返回
+//      LoginUser是我们自己封装的一个UserDetails接口的实现类
+        return new LoginUser(user,list);  //传入用户信息及权限集合
+    }
+}
+```
+
+
+
+
+
+```java
+@RestController
+@RequestMapping("/hello")
+public class HelloController {
+
+    @GetMapping("/hello")
+//    会执行hasAuthority('test')方法，返回值类型是布尔类型，如果是true就可以访问这个请求
+    @PreAuthorize("hasAuthority('system:dept:list')")  //访问资源之前进行一个资源的认证，是否能够访问这个资源
+    private String hello(){
+        return "hello";
+    }
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+# 四、 自定义失败处理
+
+​       希望在认证失败或者是授权失败的情况下也能和我们的接口一样返回相同结构的ison，这样可以让前端能对响
+
+​    应进行统一的处理。要实现这个功能我们需要知道SpringSecurity的异常处理机制。
+
+
+
+​        在SpringSecurity中，如果我们在认证或者授权的过程中出现了**异常会被ExceptionTranslationFilter捕获到**。**在ExceptionTranslationFilter中会去判断是认证失败还是授权失败出现的异常**。
+
+
+
+​       如果是**认证过程**中出现的**异常**会被封装成**AuthenticationException然后调用AuthenticationEntrvPoint对象的方法去进行异常外理**
+
+
+
+​     如果是**授权过程**中出现的**异常**会被封装成**AccessDeniedException然后调用AccessDeniedHandler对象的方法去进行异常处理**.
+
+
+
+​     **所以如果我们需要自定义异常处理，我们只需要自定义AuthenticationEntryPoint和AccessDeniedHandler然后配置给SpringSecurity即可。**
+
+## 4.1 自定义实现类
+
+
+
+
+
+### 4.1.1 自定义AuthenticationEntryPoint 提示认证失败
+
+```java
+@Component
+public class AuthenticationEntryPointImpl implements AuthenticationEntryPoint {
+    @Override
+    public void commence(HttpServletRequest request, HttpServletResponse response, AuthenticationException authException) throws IOException, ServletException {
+        ResponseResult  r = new ResponseResult(HttpStatus.UNAUTHORIZED.value(),"用户认证失败。请重新登录");  //认证失败
+        String json = JSON.toJSONString(r);
+//      不论成功还是失败，都是JSON格式
+        WebUtils.renderString(response,json);
+    }
+}
+```
+
+
+
+
+
+### 4.1.2  自定义AccessDeniedHandler   提示授权失败
+
+```java
+@Component
+public class AccessDeniedHandlerImpl implements AccessDeniedHandler {
+    @Override
+    public void handle(HttpServletRequest request, HttpServletResponse response, AccessDeniedException accessDeniedException) throws IOException, ServletException {
+        ResponseResult r = new ResponseResult(HttpStatus.FORBIDDEN.value(),"权限不足");  //认证失败
+        String json = JSON.toJSONString(r);
+//      不论成功还是失败，都是JSON格式
+        WebUtils.renderString(response,json); // 封装的方法
+    }
+}
+```
+
+
+
+
+
+## 4.2 配置给SpringSecurity
+
+​     **所以如果我们需要自定义异常处理，我们只需要自定义AuthenticationEntryPoint和AccessDeniedHandler然后配置给SpringSecurity即可。**
+
+
+
+```java
+@Configuration
+@EnableGlobalMethodSecurity(prePostEnabled = true)
+public class SecurityConfig extends WebSecurityConfigurerAdapter {
+
+    /**
+     *    密码加密解密
+     * @return 创建  BCryptPasswordEncoder 注入容器
+     */
+    @Bean
+    public PasswordEncoder passwordEncoder(){
+        return  new BCryptPasswordEncoder();
+    }
+
+
+    @Autowired
+    private JwtAuthenticationTokenFilter jwtAuthenticationTokenFilter;
+
+    @Autowired
+    private AuthenticationEntryPoint AuthenticationEntryPoint;
+
+    @Autowired
+    private AccessDeniedHandler AccessDeniedHandler;
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http
+                //关闭csrf
+                .csrf().disable()
+                //不通过Session获取SecurityContext
+                .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                .and()
+                .authorizeRequests()
+                // 对于登录接口 允许匿名访问
+                .antMatchers("/user/login").anonymous()
+                // 除上面外的所有请求全部需要鉴权认证
+                .anyRequest().authenticated();
+//      TODO 添加过滤器
+        http.addFilterBefore(jwtAuthenticationTokenFilter, UsernamePasswordAuthenticationFilter.class);
+
+//      TODO 配置异常处理器
+//      添加AuthenticationEntryPoint和AccessDeniedHandler然后配置给SpringSecurity
+        http.exceptionHandling()
+//              认证失败处理器
+                .authenticationEntryPoint( AuthenticationEntryPoint)
+//              授权失败处理器
+                .accessDeniedHandler(AccessDeniedHandler);
+    }
+
+    /**
+     *
+     * @return  在SecurityConfig中配置把AuthenticationManager注入容器。
+     * @throws Exception
+     */
+    @Bean
+    public AuthenticationManager authenticationManagerBean() throws Exception {
+        return super.authenticationManagerBean();
+    }
+}
+```
+
+
+
+
+
+
+
+# 五、跨域问题
 
