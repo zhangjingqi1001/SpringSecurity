@@ -2113,6 +2113,10 @@ public class HelloController {
 
 ​     **所以如果我们需要自定义异常处理，我们只需要自定义AuthenticationEntryPoint和AccessDeniedHandler然后配置给SpringSecurity即可。**
 
+
+
+
+
 ## 4.1 自定义实现类
 
 
@@ -2231,4 +2235,243 @@ public class SecurityConfig extends WebSecurityConfigurerAdapter {
 
 
 # 五、跨域问题
+
+浏览器出于安全的考虑，使用XMLHttpRequest对象发起http请求时必须遵守同源策略，否则就是跨域HTTP请求，默认情况下是被禁止的。**同源策略要求源相同才能正常进行通信，即协议、域名、端口号都完全一致。**
+
+前后端分离项目，前端项目和后端项目一般都不是同源的，所以肯定会存在跨域请求问题。
+
+
+
+## 5.1  SpringBoot 配置
+
+```java
+@Configuration
+public class CorsConfig implements WebMvcConfigurer {
+
+    @Override
+    public void addCorsMappings(CorsRegistry registry) {
+        // 设置允许跨域的路径
+        registry.addMapping("/**")
+                // 设置允许跨域请求的域名
+                .allowedOriginPatterns("*")
+                // 是否允许cookie
+                .allowCredentials(true)
+                // 设置允许的请求方式
+                .allowedMethods("GET", "POST", "DELETE", "PUT")
+                // 设置允许的header属性
+                .allowedHeaders("*")
+                // 跨域允许时间
+                .maxAge(3600);
+    }
+}
+```
+
+
+
+
+
+
+
+## 5.2 开启SpringSecurity跨域访问
+
+```java
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http
+                //关闭csrf
+                .csrf().disable()
+                //不通过Session获取SecurityContext
+                .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                .and()
+                .authorizeRequests()
+                // 对于登录接口 允许匿名访问
+                .antMatchers("/user/login").anonymous()
+                // 除上面外的所有请求全部需要鉴权认证
+                .anyRequest().authenticated();
+//      TODO 添加过滤器
+        http.addFilterBefore(jwtAuthenticationTokenFilter, UsernamePasswordAuthenticationFilter.class);
+
+//      TODO 配置异常处理器
+//      添加AuthenticationEntryPoint和AccessDeniedHandler然后配置给SpringSecurity
+        http.exceptionHandling()
+//              认证失败处理器
+                .authenticationEntryPoint( AuthenticationEntryPoint)
+//              授权失败处理器
+                .accessDeniedHandler(AccessDeniedHandler);
+//      TODO 允许跨域
+        http.cors();
+    }
+```
+
+
+
+
+
+
+
+# 六、遗留问题
+
+
+
+## 6.1 其它权限校验方法
+
+
+
+​	我们前面都是使用@PreAuthorize注解，然后在在其中使用的是hasAuthority方法进行校验。SpringSecurity还为我们提供了其它方法例如：hasAnyAuthority，hasRole，hasAnyRole等。
+
+​    
+
+​	这里我们先不急着去介绍这些方法，我们先去理解hasAuthority的原理，然后再去学习其他方法你就更容易理解，而不是死记硬背区别。并且我们也可以选择定义校验方法，实现我们自己的校验逻辑。
+
+​	hasAuthority方法实际是执行到了SecurityExpressionRoot的hasAuthority，大家只要断点调试既可知道它内部的校验原理。
+
+​	它内部其实是调用authentication的getAuthorities方法获取用户的权限列表。然后判断我们存入的方法参数数据在权限列表中。
+
+
+
+​	hasAnyAuthority方法可以传入多个权限，只有用户有其中任意一个权限都可以访问对应资源。
+
+~~~~java
+    @PreAuthorize("hasAnyAuthority('admin','test','system:dept:list')")
+    public String hello(){
+        return "hello";
+    }
+~~~~
+
+
+
+​	hasRole要求有对应的角色才可以访问，但是它内部会把我们传入的参数拼接上 **ROLE_** 后再去比较。所以这种情况下要用用户对应的权限也要有 **ROLE_** 这个前缀才可以。
+
+~~~~java
+    @PreAuthorize("hasRole('system:dept:list')")
+    public String hello(){
+        return "hello";
+    }
+~~~~
+
+
+
+​	hasAnyRole 有任意的角色就可以访问。它内部也会把我们传入的参数拼接上 **ROLE_** 后再去比较。所以这种情况下要用用户对应的权限也要有 **ROLE_** 这个前缀才可以。
+
+~~~~java
+    @PreAuthorize("hasAnyRole('admin','system:dept:list')")
+    public String hello(){
+        return "hello";
+    }
+~~~~
+
+
+
+## 6.2 自定义权限校验方法
+
+​	我们也可以定义自己的权限校验方法，在@PreAuthorize注解中使用我们的方法。
+
+~~~~java
+@Component("ex")   //bean的名字为ex
+public class SGExpressionRoot {
+
+    public boolean hasAuthority(String authority){
+        //获取当前用户的权限
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        LoginUser loginUser = (LoginUser) authentication.getPrincipal();
+        List<String> permissions = loginUser.getPermissions();
+        //判断用户权限集合中是否存在authority
+        return permissions.contains(authority);
+    }
+}
+~~~~
+
+​	 在SPEL表达式中使用 @ex相当于获取容器中bean的名字未ex的对象。然后再调用这个对象的hasAuthority方法
+
+~~~~java
+    @RequestMapping("/hello")
+    @PreAuthorize("@ex.hasAuthority('system:dept:list')")
+    public String hello(){
+        return "hello";
+    }
+~~~~
+
+
+
+
+
+## 6.3 基于配置的权限控制
+
+
+
+​	我们也可以在配置类中使用使用配置的方式对资源进行权限控制。
+
+~~~~java
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http
+                //关闭csrf
+                .csrf().disable()
+                //不通过Session获取SecurityContext
+                .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                .and()
+                .authorizeRequests()
+                // 对于登录接口 允许匿名访问
+                .antMatchers("/user/login").anonymous()   //TODO 匿名访问，不需要验证
+                .antMatchers("/testCors").hasAuthority("system:dept:list222")  //TODO  在这里进行配置的
+                // 除上面外的所有请求全部需要鉴权认证
+                .anyRequest().authenticated();
+
+        //添加过滤器
+        http.addFilterBefore(jwtAuthenticationTokenFilter, UsernamePasswordAuthenticationFilter.class);
+
+        //配置异常处理器
+        http.exceptionHandling()
+                //配置认证失败处理器
+                .authenticationEntryPoint(authenticationEntryPoint)
+                .accessDeniedHandler(accessDeniedHandler);
+
+        //允许跨域
+        http.cors();
+    }
+~~~~
+
+
+
+## 6.4CSRF
+
+​	CSRF是指跨站请求伪造（Cross-site request forgery），是web常见的攻击之一。
+
+​	https://blog.csdn.net/freeking101/article/details/86537087
+
+​	SpringSecurity去防止CSRF攻击的方式就是通过csrf_token。后端会生成一个csrf_token，前端发起请求的时候需要携带这个csrf_token,后端会有过滤器进行校验，如果没有携带或者是伪造的就不允许访问。
+
+​	我们可以发现CSRF攻击依靠的是cookie中所携带的认证信息。但是在前后端分离的项目中我们的认证信息其实是token，而token并不是存储中cookie中，并且需要前端代码去把token设置到请求头中才可以，所以CSRF攻击也就不用担心了。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

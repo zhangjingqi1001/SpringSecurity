@@ -1,10 +1,8 @@
-package com.springsecurity.handler;
+package com.sangeng.handler;
 
 import com.alibaba.fastjson.JSON;
-import com.springsecurity.utils.ResponseResult;
-import com.springsecurity.utils.WebUtils;
-import org.apache.coyote.Response;
-import org.springframework.context.annotation.Configuration;
+import com.sangeng.domain.ResponseResult;
+import com.sangeng.utils.WebUtils;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.AuthenticationEntryPoint;
@@ -19,10 +17,9 @@ import java.io.IOException;
 public class AuthenticationEntryPointImpl implements AuthenticationEntryPoint {
     @Override
     public void commence(HttpServletRequest request, HttpServletResponse response, AuthenticationException authException) throws IOException, ServletException {
-        ResponseResult  r = new ResponseResult(HttpStatus.UNAUTHORIZED.value(),"用户认证失败。请重新登录");  //认证失败
-        authException.printStackTrace();
-        String json = JSON.toJSONString(r);
-//      不论成功还是失败，都是JSON格式
+        ResponseResult result = new ResponseResult(HttpStatus.UNAUTHORIZED.value(),"用户认证失败请查询登录");
+        String json = JSON.toJSONString(result);
+        //处理异常
         WebUtils.renderString(response,json);
     }
 }

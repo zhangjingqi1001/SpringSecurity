@@ -1,10 +1,10 @@
-package com.springsecurity.config;
+package com.sangeng.config;
 
-import com.springsecurity.filter.JwtAuthenticationTokenFilter;
-import com.springsecurity.handler.AuthenticationEntryPointImpl;
+import com.sangeng.filter.JwtAuthenticationTokenFilter;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.config.annotation.method.configuration.EnableGlobalMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -20,24 +20,20 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 @EnableGlobalMethodSecurity(prePostEnabled = true)
 public class SecurityConfig extends WebSecurityConfigurerAdapter {
 
-    /**
-     *    密码加密解密
-     * @return 创建  BCryptPasswordEncoder 注入容器
-     */
+    //创建BCryptPasswordEncoder注入容器
     @Bean
     public PasswordEncoder passwordEncoder(){
-        return  new BCryptPasswordEncoder();
+        return new BCryptPasswordEncoder();
     }
-
-
     @Autowired
     private JwtAuthenticationTokenFilter jwtAuthenticationTokenFilter;
 
-    @Autowired
-    private AuthenticationEntryPoint AuthenticationEntryPoint;
 
     @Autowired
-    private AccessDeniedHandler AccessDeniedHandler;
+    private AuthenticationEntryPoint authenticationEntryPoint;
+
+    @Autowired
+    private AccessDeniedHandler accessDeniedHandler;
 
     @Override
     protected void configure(HttpSecurity http) throws Exception {
@@ -50,27 +46,23 @@ public class SecurityConfig extends WebSecurityConfigurerAdapter {
                 .authorizeRequests()
                 // 对于登录接口 允许匿名访问
                 .antMatchers("/user/login").anonymous()
+//                .antMatchers("/testCors").hasAuthority("system:dept:list222")
                 // 除上面外的所有请求全部需要鉴权认证
                 .anyRequest().authenticated();
-//      TODO 添加过滤器
+
+        //添加过滤器
         http.addFilterBefore(jwtAuthenticationTokenFilter, UsernamePasswordAuthenticationFilter.class);
 
-//      TODO 配置异常处理器
-//      添加AuthenticationEntryPoint和AccessDeniedHandler然后配置给SpringSecurity
+        //配置异常处理器
         http.exceptionHandling()
-//              认证失败处理器
-                .authenticationEntryPoint( AuthenticationEntryPoint)
-//              授权失败处理器
-                .accessDeniedHandler(AccessDeniedHandler);
-//      允许跨域
+                //配置认证失败处理器
+                .authenticationEntryPoint(authenticationEntryPoint)
+                .accessDeniedHandler(accessDeniedHandler);
+
+        //允许跨域
         http.cors();
     }
 
-    /**
-     *
-     * @return  在SecurityConfig中配置把AuthenticationManager注入容器。
-     * @throws Exception
-     */
     @Bean
     @Override
     public AuthenticationManager authenticationManagerBean() throws Exception {
