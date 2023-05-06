@@ -2433,9 +2433,11 @@ public class SGExpressionRoot {
 
 
 
-## 6.4CSRF
+## 6.4 CSRF
 
-​	CSRF是指跨站请求伪造（Cross-site request forgery），是web常见的攻击之一。
+
+
+​    CSRF是指跨站请求伪造（Cross-site request forgery），是web常见的攻击之一。
 
 ​	https://blog.csdn.net/freeking101/article/details/86537087
 
@@ -2445,7 +2447,149 @@ public class SGExpressionRoot {
 
 
 
+​	**前后端分离项目天然不怕CSRF攻击的，所以我们在最开始配置的时候是csrf().disable()**
 
+
+
+
+
+## 6.5 认证成功处理器
+
+​	实际上在UsernamePasswordAuthenticationFilter进行登录认证的时候，如果登录成功了是会调用AuthenticationSuccessHandler的方法进行认证成功后的处理的。AuthenticationSuccessHandler就是登录成功处理器。
+
+​	我们也可以自己去自定义成功处理器进行成功后的相应处理。
+
+~~~~java
+@Component
+public class SGSuccessHandler implements AuthenticationSuccessHandler {
+
+    @Override
+    public void onAuthenticationSuccess(HttpServletRequest request, HttpServletResponse response, Authentication authentication) throws IOException, ServletException {
+        System.out.println("认证成功了");
+    }
+}
+
+~~~~
+
+~~~~java
+@Configuration
+public class SecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Autowired
+    private AuthenticationSuccessHandler successHandler;
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http.formLogin().successHandler(successHandler);
+
+        http.authorizeRequests().anyRequest().authenticated();
+    }
+}
+
+~~~~
+
+
+
+
+
+
+
+
+
+## 6.6 认证失败处理器
+
+实际上在UsernamePasswordAuthenticationFilter进行登录认证的时候，如果认证失败了是会调用AuthenticationFailureHandler的方法进行认证失败后的处理的。AuthenticationFailureHandler就是登录失败处理器。
+
+​	我们也可以自己去自定义失败处理器进行失败后的相应处理。
+
+~~~~java
+@Component
+public class SGFailureHandler implements AuthenticationFailureHandler {
+    @Override
+    public void onAuthenticationFailure(HttpServletRequest request, HttpServletResponse response, AuthenticationException exception) throws IOException, ServletException {
+        System.out.println("认证失败了");
+    }
+}
+~~~~
+
+
+
+~~~~java
+@Configuration
+public class SecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Autowired
+    private AuthenticationSuccessHandler successHandler;
+
+    @Autowired
+    private AuthenticationFailureHandler failureHandler;
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http.formLogin()
+//                配置认证成功处理器
+                .successHandler(successHandler)
+//                配置认证失败处理器
+                .failureHandler(failureHandler);
+
+        http.authorizeRequests().anyRequest().authenticated();
+    }
+}
+
+~~~~
+
+
+
+
+
+
+
+
+
+## 6.7 注销成功处理器
+
+
+
+~~~~java
+@Component
+public class SGLogoutSuccessHandler implements LogoutSuccessHandler {
+    @Override
+    public void onLogoutSuccess(HttpServletRequest request, HttpServletResponse response, Authentication authentication) throws IOException, ServletException {
+        System.out.println("注销成功");
+    }
+}
+
+~~~~
+
+~~~~java
+@Configuration
+public class SecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Autowired
+    private AuthenticationSuccessHandler successHandler;
+
+    @Autowired
+    private AuthenticationFailureHandler failureHandler;
+
+    @Autowired
+    private LogoutSuccessHandler logoutSuccessHandler;
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http.formLogin()
+//                配置认证成功处理器
+                .successHandler(successHandler)
+//                配置认证失败处理器
+                .failureHandler(failureHandler);
+
+        http.logout()
+                //配置注销成功处理器
+                .logoutSuccessHandler(logoutSuccessHandler);
+
+        http.authorizeRequests().anyRequest().authenticated();
+    }
+}
+~~~~
 
 
 
